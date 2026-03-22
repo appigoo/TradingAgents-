@@ -9,7 +9,7 @@ import time
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Multi-Agent Trading AI",
+    page_title="多智能體交易 AI",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -29,8 +29,8 @@ st.markdown("""
     --accent2: #7c3aed;
     --danger: #ff4444;
     --warn: #ffaa00;
-    --text: #e8e8f0;
-    --muted: #6b6b8a;
+    --text: #FFD700;
+    --muted: #b8972a;
 }
 
 html, body, [class*="css"] {
@@ -365,9 +365,9 @@ Keep response under 220 words. End with VERDICT: BUY / SELL / HOLD and a brief r
 # Header
 st.markdown("""
 <div style='padding: 20px 0 10px 0;'>
-    <div style='font-family: Space Mono, monospace; font-size: 11px; color: #6b6b8a; letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 6px;'>TAURIC-INSPIRED</div>
-    <h1 style='margin: 0; font-size: 28px; font-family: Space Mono, monospace;'>Multi-Agent Trading AI</h1>
-    <div style='color: #6b6b8a; font-size: 14px; margin-top: 6px;'>Powered by Groq · llama-3.3-70b-versatile</div>
+    <div style='font-family: Space Mono, monospace; font-size: 11px; color: #b8972a; letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 6px;'>受 TAURIC 啟發</div>
+    <h1 style='margin: 0; font-size: 28px; font-family: Space Mono, monospace; color: #FFD700;'>多智能體交易 AI</h1>
+    <div style='color: #b8972a; font-size: 14px; margin-top: 6px;'>由 Groq 驅動 · llama-3.3-70b-versatile</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -376,55 +376,55 @@ api_key = st.secrets.get("GROQ_API_KEY", "")
 
 # Sidebar
 with st.sidebar:
-    st.markdown("<div class='section-title'>Configuration</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>設定</div>", unsafe_allow_html=True)
 
     if api_key:
         st.markdown("""
         <div style='background:rgba(0,255,136,0.08); border:1px solid rgba(0,255,136,0.25);
         border-radius:8px; padding:8px 12px; font-size:12px; color:#00ff88;
         font-family:Space Mono,monospace; margin-bottom:12px;'>
-        ✅ API Key loaded from Secrets
+        ✅ API 金鑰已從 Secrets 載入
         </div>
         """, unsafe_allow_html=True)
     else:
-        api_key = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
+        api_key = st.text_input("Groq API 金鑰", type="password", placeholder="gsk_...")
         st.markdown("""
-        <div style='font-size:11px; color:#6b6b8a; margin-top:-8px; margin-bottom:8px;'>
+        <div style='font-size:11px; color:#b8972a; margin-top:-8px; margin-bottom:8px;'>
         💡 或於 Streamlit Cloud → Secrets 設定 <code>GROQ_API_KEY</code>
         </div>
         """, unsafe_allow_html=True)
 
-    ticker_input = st.text_input("Stock Ticker", value="TSLA", placeholder="TSLA, NVDA, AAPL...")
-    period = st.selectbox("Historical Period", ["3mo", "6mo", "1y", "2y"], index=1)
+    ticker_input = st.text_input("股票代號", value="TSLA", placeholder="TSLA, NVDA, AAPL...")
+    period = st.selectbox("歷史數據週期", ["3mo", "6mo", "1y", "2y"], index=1)
 
-    st.markdown("<div class='section-title'>Agents</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>智能體</div>", unsafe_allow_html=True)
     st.markdown("""
-    <div style='font-size:13px; color:#6b6b8a; line-height:2;'>
-    📊 Technical Analyst<br>
-    📰 Sentiment Analyst<br>
-    💰 Fundamental Analyst<br>
-    🎯 Risk Manager (Final)
+    <div style='font-size:13px; color:#b8972a; line-height:2;'>
+    📊 技術分析師<br>
+    📰 情緒分析師<br>
+    💰 基本面分析師<br>
+    🎯 風險管理員（最終決策）
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div class='section-title'>About</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>關於</div>", unsafe_allow_html=True)
     st.markdown("""
-    <div style='font-size:12px; color:#6b6b8a; line-height:1.8;'>
-    Inspired by <b>TradingAgents</b> (Tauric Research).<br>
-    Multi-agent LLM framework for stock analysis.<br><br>
-    Data: yfinance · Free tier
+    <div style='font-size:12px; color:#b8972a; line-height:1.8;'>
+    受 <b>TradingAgents</b>（Tauric Research）啟發。<br>
+    多智能體 LLM 股票分析框架。<br><br>
+    數據來源：yfinance · 免費使用
     </div>
     """, unsafe_allow_html=True)
 
-    run_btn = st.button("🚀 Run Analysis")
+    run_btn = st.button("🚀 開始分析")
 
 # Main content
 if not run_btn:
     st.markdown("""
-    <div style='text-align:center; padding: 80px 20px; color: #6b6b8a;'>
+    <div style='text-align:center; padding: 80px 20px; color: #b8972a;'>
         <div style='font-size: 48px; margin-bottom: 16px;'>🤖</div>
-        <div style='font-family: Space Mono, monospace; font-size: 14px; margin-bottom: 8px;'>4 AI Agents Ready</div>
-        <div style='font-size: 13px;'>選擇 Ticker，然後點擊 Run Analysis</div>
+        <div style='font-family: Space Mono, monospace; font-size: 14px; margin-bottom: 8px; color: #FFD700;'>4 個 AI 智能體待命中</div>
+        <div style='font-size: 13px;'>選擇股票代號，然後點擊「開始分析」</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -435,18 +435,18 @@ else:
     ticker_symbol = ticker_input.upper().strip()
 
     # Fetch data
-    with st.spinner(f"Fetching {ticker_symbol} data..."):
+    with st.spinner(f"正在獲取 {ticker_symbol} 市場數據..."):
         try:
             tk = yf.Ticker(ticker_symbol)
             df = tk.history(period=period)
             if df.empty:
-                st.error(f"No data found for {ticker_symbol}. Check the ticker symbol.")
+                st.error(f"找不到 {ticker_symbol} 的數據，請檢查股票代號。")
                 st.stop()
             technicals = compute_technicals(df)
             fundamentals = get_fundamentals(tk)
             news_headlines = get_news(tk)
         except Exception as e:
-            st.error(f"Data fetch error: {e}")
+            st.error(f"數據獲取錯誤：{e}")
             st.stop()
 
     # Price metrics row
@@ -457,15 +457,15 @@ else:
     st.markdown(f"""
     <div class='metric-row'>
         <div class='metric-item'>
-            <div class='metric-label'>Price</div>
+            <div class='metric-label'>股價</div>
             <div class='metric-value'>${technicals['price']}</div>
         </div>
         <div class='metric-item'>
-            <div class='metric-label'>Change</div>
+            <div class='metric-label'>漲跌幅</div>
             <div class='metric-value {change_color}'>{change_arrow} {abs(change)}%</div>
         </div>
         <div class='metric-item'>
-            <div class='metric-label'>RSI (14)</div>
+            <div class='metric-label'>RSI（14）</div>
             <div class='metric-value {"up" if technicals["rsi"] < 70 else "down"}'>{technicals['rsi']}</div>
         </div>
         <div class='metric-item'>
@@ -473,11 +473,11 @@ else:
             <div class='metric-value'>{technicals['atr']}</div>
         </div>
         <div class='metric-item'>
-            <div class='metric-label'>52W High</div>
+            <div class='metric-label'>52週高位</div>
             <div class='metric-value'>${technicals['high_52w']}</div>
         </div>
         <div class='metric-item'>
-            <div class='metric-label'>52W Low</div>
+            <div class='metric-label'>52週低位</div>
             <div class='metric-value'>${technicals['low_52w']}</div>
         </div>
     </div>
@@ -485,20 +485,20 @@ else:
 
     # News preview
     if news_headlines:
-        st.markdown("<div class='section-title'>Recent Headlines</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>最新新聞標題</div>", unsafe_allow_html=True)
         for h in news_headlines[:4]:
             st.markdown(f"<div class='news-item'>📌 {h}</div>", unsafe_allow_html=True)
 
     # Run agents
-    st.markdown("<div class='section-title'>Agent Analysis</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>智能體分析</div>", unsafe_allow_html=True)
 
     client = get_groq_client(api_key)
-    progress = st.progress(0, text="Initialising agents...")
+    progress = st.progress(0, text="正在初始化智能體...")
 
     agent_results = {}
 
     # ── Agent 1: Technical ────────────────────────────────────────────────────
-    progress.progress(10, text="📊 Technical Analyst is working...")
+    progress.progress(10, text="📊 技術分析師分析中...")
     tech_prompt = f"""
 Stock: {ticker_symbol}
 Current Price: ${technicals['price']} ({'+' if change >= 0 else ''}{change}% today)
@@ -519,14 +519,14 @@ Volume: {technicals['volume']:,} (Avg: {technicals['avg_volume']:,})
     <div class='agent-card technical'>
         <div class='agent-header'>
             <span class='agent-icon'>📊</span>
-            <span class='agent-name'>Technical Analyst</span>
+            <span class='agent-name'>技術分析師</span>
         </div>
         <div class='agent-content'>{agent_results['technical'].replace(chr(10), '<br>')}</div>
     </div>
     """, unsafe_allow_html=True)
 
     # ── Agent 2: Sentiment ────────────────────────────────────────────────────
-    progress.progress(35, text="📰 Sentiment Analyst is working...")
+    progress.progress(35, text="📰 情緒分析師分析中...")
     headlines_text = "\n".join(f"- {h}" for h in news_headlines) if news_headlines else "No recent headlines available."
     sentiment_prompt = f"""
 Stock: {ticker_symbol}
@@ -544,14 +544,14 @@ Also note: Today's price change is {'+' if change >= 0 else ''}{change}%, which 
     <div class='agent-card sentiment'>
         <div class='agent-header'>
             <span class='agent-icon'>📰</span>
-            <span class='agent-name'>Sentiment Analyst</span>
+            <span class='agent-name'>情緒分析師</span>
         </div>
         <div class='agent-content'>{agent_results['sentiment'].replace(chr(10), '<br>')}</div>
     </div>
     """, unsafe_allow_html=True)
 
     # ── Agent 3: Fundamental ──────────────────────────────────────────────────
-    progress.progress(60, text="💰 Fundamental Analyst is working...")
+    progress.progress(60, text="💰 基本面分析師分析中...")
 
     def fmt(v):
         if v == "N/A" or v is None:
@@ -585,14 +585,14 @@ Analyst Consensus: {fundamentals['recommendation']}
     <div class='agent-card fundamental'>
         <div class='agent-header'>
             <span class='agent-icon'>💰</span>
-            <span class='agent-name'>Fundamental Analyst</span>
+            <span class='agent-name'>基本面分析師</span>
         </div>
         <div class='agent-content'>{agent_results['fundamental'].replace(chr(10), '<br>')}</div>
     </div>
     """, unsafe_allow_html=True)
 
     # ── Agent 4: Risk Manager (Final) ─────────────────────────────────────────
-    progress.progress(80, text="🎯 Risk Manager synthesising...")
+    progress.progress(80, text="🎯 風險管理員綜合評估中...")
     risk_prompt = f"""
 Stock under review: {ticker_symbol} @ ${technicals['price']}
 
@@ -616,13 +616,13 @@ Make your final decision.
     <div class='agent-card risk'>
         <div class='agent-header'>
             <span class='agent-icon'>🎯</span>
-            <span class='agent-name'>Risk Manager · Final Decision</span>
+            <span class='agent-name'>風險管理員 · 最終決策</span>
         </div>
         <div class='agent-content'>{agent_results['risk'].replace(chr(10), '<br>')}</div>
     </div>
     """, unsafe_allow_html=True)
 
-    progress.progress(100, text="✅ Analysis complete")
+    progress.progress(100, text="✅ 分析完成")
     time.sleep(0.5)
     progress.empty()
 
@@ -636,12 +636,13 @@ Make your final decision.
 
     verdict_class = verdict.lower()
     verdict_emoji = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}.get(verdict, "⚪")
+    verdict_zh = {"BUY": "買入", "SELL": "賣出", "HOLD": "持有"}.get(verdict, verdict)
 
     st.markdown(f"""
     <div class='verdict-box'>
-        <div class='verdict-label'>Final Verdict · {ticker_symbol}</div>
-        <div class='verdict-text {verdict_class}'>{verdict_emoji} {verdict}</div>
-        <div style='font-size:12px; color:#6b6b8a; margin-top:8px; font-family: Space Mono, monospace;'>
+        <div class='verdict-label'>最終裁決 · {ticker_symbol}</div>
+        <div class='verdict-text {verdict_class}'>{verdict_emoji} {verdict_zh}</div>
+        <div style='font-size:12px; color:#b8972a; margin-top:8px; font-family: Space Mono, monospace;'>
             {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC · llama-3.3-70b-versatile
         </div>
     </div>
@@ -649,7 +650,6 @@ Make your final decision.
 
     st.markdown("""
     <div style='margin-top:20px; padding:12px 16px; background:#1a1a24; border-radius:8px; border:1px solid #2a2a3a;'>
-        <span style='font-size:11px; color:#6b6b8a;'>⚠️ <b>Disclaimer:</b> This is an AI-generated analysis for educational purposes only. 
-        Not financial advice. Always do your own research before trading.</span>
+        <span style='font-size:11px; color:#b8972a;'>⚠️ <b>免責聲明：</b>本分析由 AI 生成，僅供學習及研究用途，並非投資建議。交易涉及風險，請自行做好研究，切勿單憑 AI 輸出作出投資決定。</span>
     </div>
     """, unsafe_allow_html=True)
