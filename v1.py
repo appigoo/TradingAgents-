@@ -371,10 +371,29 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ── Load API key from Secrets (fallback to manual input) ──────────────────────
+api_key = st.secrets.get("GROQ_API_KEY", "")
+
 # Sidebar
 with st.sidebar:
     st.markdown("<div class='section-title'>Configuration</div>", unsafe_allow_html=True)
-    api_key = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
+
+    if api_key:
+        st.markdown("""
+        <div style='background:rgba(0,255,136,0.08); border:1px solid rgba(0,255,136,0.25);
+        border-radius:8px; padding:8px 12px; font-size:12px; color:#00ff88;
+        font-family:Space Mono,monospace; margin-bottom:12px;'>
+        ✅ API Key loaded from Secrets
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        api_key = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
+        st.markdown("""
+        <div style='font-size:11px; color:#6b6b8a; margin-top:-8px; margin-bottom:8px;'>
+        💡 或於 Streamlit Cloud → Secrets 設定 <code>GROQ_API_KEY</code>
+        </div>
+        """, unsafe_allow_html=True)
+
     ticker_input = st.text_input("Stock Ticker", value="TSLA", placeholder="TSLA, NVDA, AAPL...")
     period = st.selectbox("Historical Period", ["3mo", "6mo", "1y", "2y"], index=1)
 
@@ -405,12 +424,12 @@ if not run_btn:
     <div style='text-align:center; padding: 80px 20px; color: #6b6b8a;'>
         <div style='font-size: 48px; margin-bottom: 16px;'>🤖</div>
         <div style='font-family: Space Mono, monospace; font-size: 14px; margin-bottom: 8px;'>4 AI Agents Ready</div>
-        <div style='font-size: 13px;'>Enter your Groq API key and ticker, then click Run Analysis</div>
+        <div style='font-size: 13px;'>選擇 Ticker，然後點擊 Run Analysis</div>
     </div>
     """, unsafe_allow_html=True)
 
 elif not api_key:
-    st.error("⚠️ Please enter your Groq API key in the sidebar.")
+    st.error("⚠️ 請於 Streamlit Cloud → App Settings → Secrets 加入 GROQ_API_KEY，或於側邊欄手動輸入。")
 
 else:
     ticker_symbol = ticker_input.upper().strip()
