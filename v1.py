@@ -222,6 +222,125 @@ def get_groq_client(api_key: str) -> Groq:
     return Groq(api_key=api_key)
 
 
+# ── FIX 1: Cache yfinance data to avoid repeated requests ─────────────────────
+# TTL=300 means data cached for 5 minutes per ticker+period combo
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_market_data(ticker_symbol: str, period: str):
+    """
+    Fetch ticker history + info with exponential backoff retry.
+    Cached for 5 minutes to avoid hammering Yahoo Finance.
+    Returns (df, info_dict, news_list) or raises on failure.
+    """
+    max_retries = 4
+    base_delay = 3  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            # ── FIX 2: Use a custom session with a browser-like User-Agent ──
+            import requests
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
+            })
+
+            tk = yf.Ticker(ticker_symbol, session=session)
+
+            # history() is the most rate-limit-sensitive call
+            df = tk.history(period=period)
+            if df.empty:
+                raise ValueError(f"找不到 {ticker_symbol} 的數據，請檢查股票代號。")
+
+            info = tk.info  # may also be rate-limited
+            news = tk.news or []
+            return df, info, news, tk
+
+        except Exception as e:
+            err_str = str(e).lower()
+            is_rate_limit = any(k in err_str for k in [
+                "too many requests", "rate limit", "429", "rateli"
+            ])
+            if is_rate_limit and attempt < max_retries - 1:
+                wait = base_delay * (2 ** attempt)  # 3s, 6s, 12s
+                # Surface the wait to the user via a status message
+                raise _RateLimitError(wait, attempt + 1, max_retries)
+            raise  # re-raise for non-rate-limit errors or final attempt
+
+
+class _RateLimitError(Exception):
+    """Sentinel so the caller can show a countdown and retry."""
+    def __init__(self, wait_seconds: int, attempt: int, max_retries: int):
+        self.wait_seconds = wait_seconds
+        self.attempt = attempt
+        self.max_retries = max_retries
+        super().__init__(f"Rate limited. Wait {wait_seconds}s (attempt {attempt}/{max_retries})")
+
+
+def fetch_with_retry_ui(ticker_symbol: str, period: str):
+    """
+    Wrapper that surfaces rate-limit retries as a live countdown in Streamlit.
+    Returns (df, info_dict, news_list, ticker_obj).
+    """
+    max_retries = 4
+    base_delay = 3
+
+    for attempt in range(max_retries):
+        try:
+            return fetch_market_data(ticker_symbol, period)
+
+        except _RateLimitError as rle:
+            if attempt < max_retries - 1:
+                # ── FIX 3: Show a live countdown so user knows what's happening
+                msg_placeholder = st.empty()
+                for remaining in range(rle.wait_seconds, 0, -1):
+                    msg_placeholder.warning(
+                        f"⏳ Yahoo Finance 請求過於頻繁，正在等候 {remaining}秒 後重試… "
+                        f"（第 {rle.attempt} / {rle.max_retries - 1} 次重試）"
+                    )
+                    time.sleep(1)
+                msg_placeholder.empty()
+                # Bust the cache so next call actually hits Yahoo again
+                fetch_market_data.clear()
+            else:
+                st.error(
+                    "❌ Yahoo Finance 多次限流，請等待 1–2 分鐘後再試。\n\n"
+                    "**提示：** 可以嘗試切換網絡（手機熱點）或使用 VPN。"
+                )
+                st.stop()
+
+        except ValueError as ve:
+            # Empty data / bad ticker
+            st.error(str(ve))
+            st.stop()
+
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(k in err_str for k in ["too many requests", "rate limit", "429"]):
+                # yfinance raised raw exception instead of our sentinel
+                if attempt < max_retries - 1:
+                    wait = base_delay * (2 ** attempt)
+                    msg_placeholder = st.empty()
+                    for remaining in range(wait, 0, -1):
+                        msg_placeholder.warning(
+                            f"⏳ Yahoo Finance 限流，等候 {remaining}秒 後重試…"
+                        )
+                        time.sleep(1)
+                    msg_placeholder.empty()
+                    fetch_market_data.clear()
+                else:
+                    st.error(
+                        "❌ Yahoo Finance 多次限流，請等候 1–2 分鐘後再試。\n\n"
+                        "**提示：** 可切換網絡或使用 VPN。"
+                    )
+                    st.stop()
+            else:
+                st.error(f"數據獲取錯誤：{e}")
+                st.stop()
+
+
 def compute_technicals(df: pd.DataFrame) -> dict:
     """Calculate key technical indicators from OHLCV data."""
     close = df["Close"].squeeze()
@@ -286,8 +405,8 @@ def compute_technicals(df: pd.DataFrame) -> dict:
     }
 
 
-def get_fundamentals(ticker_obj) -> dict:
-    info = ticker_obj.info
+def get_fundamentals(info: dict) -> dict:
+    """Extract fundamentals from pre-fetched info dict."""
     return {
         "market_cap": info.get("marketCap", "N/A"),
         "pe_ratio": info.get("trailingPE", "N/A"),
@@ -307,11 +426,11 @@ def get_fundamentals(ticker_obj) -> dict:
     }
 
 
-def get_news(ticker_obj, max_items: int = 8) -> list[str]:
+def get_news(raw_news: list, max_items: int = 8) -> list[str]:
+    """Parse headlines from pre-fetched news list."""
     try:
-        news = ticker_obj.news or []
         headlines = []
-        for item in news[:max_items]:
+        for item in raw_news[:max_items]:
             content = item.get("content", {})
             title = content.get("title", "") if isinstance(content, dict) else ""
             if not title:
@@ -434,20 +553,14 @@ elif not api_key:
 else:
     ticker_symbol = ticker_input.upper().strip()
 
-    # Fetch data
-    with st.spinner(f"正在獲取 {ticker_symbol} 市場數據..."):
-        try:
-            tk = yf.Ticker(ticker_symbol)
-            df = tk.history(period=period)
-            if df.empty:
-                st.error(f"找不到 {ticker_symbol} 的數據，請檢查股票代號。")
-                st.stop()
-            technicals = compute_technicals(df)
-            fundamentals = get_fundamentals(tk)
-            news_headlines = get_news(tk)
-        except Exception as e:
-            st.error(f"數據獲取錯誤：{e}")
-            st.stop()
+    # ── FIX 4: Single fetch call with retry + cache ───────────────────────────
+    with st.spinner(f"正在獲取 {ticker_symbol} 市場數據…"):
+        result = fetch_with_retry_ui(ticker_symbol, period)
+
+    df, info_dict, raw_news, _tk = result
+    technicals = compute_technicals(df)
+    fundamentals = get_fundamentals(info_dict)
+    news_headlines = get_news(raw_news)
 
     # Price metrics row
     change = technicals["change_pct"]
