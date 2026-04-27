@@ -129,9 +129,13 @@ def av_ohlcv(symbol: str, av_key: str) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("Date").sort_index()
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def av_overview(symbol: str, av_key: str) -> dict:
-    return _av_call("OVERVIEW", {"symbol": symbol}, av_key)
+    """Raises RuntimeError on rate-limit; short TTL so errors expire quickly."""
+    data = _av_call("OVERVIEW", {"symbol": symbol}, av_key)
+    if not data or len(data) < 5:
+        raise ValueError(f"AV OVERVIEW 返回空數據，symbol={symbol}，keys={list(data.keys())}")
+    return data
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -175,43 +179,69 @@ def td_ohlcv(symbol: str, td_key: str) -> pd.DataFrame:
 @st.cache_data(ttl=300, show_spinner=False)
 def td_fundamentals(symbol: str, td_key: str) -> dict:
     """
-    Fetch statistics + profile from Twelve Data.
-    statistics → valuation / financials / stock_statistics
-    profile    → sector, industry, description
+    Fetch statistics + profile + quote from Twelve Data (all free tier).
+
+    CRITICAL: TD statistics values are nested objects:
+        {"trailing_pe": {"value": 89.4, "description": "Trailing P/E"}}
+    Must extract .value — NOT treat the dict as the value itself.
     """
     NA = "N/A"
 
-    def g(d, *keys):
-        """Safe nested get with float coercion."""
-        val = d
-        for k in keys:
-            if not isinstance(val, dict): return NA
-            val = val.get(k, NA)
-        if val in (NA, None, "", "None"): return NA
-        try: return float(val)
-        except: return val
+    def extract(d, key):
+        """
+        Extract value from TD statistics field.
+        Handles both flat values and nested {"value": X, "description": Y} objects.
+        Returns float if possible, else string, else NA.
+        """
+        if not isinstance(d, dict):
+            return NA
+        raw = d.get(key)
+        if raw is None:
+            return NA
+        # TD wraps each field: {"value": X, "description": "..."}
+        if isinstance(raw, dict):
+            raw = raw.get("value")
+        if raw is None or raw in ("", "None", "-", "N/A"):
+            return NA
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return str(raw)
 
     # ── /statistics ──────────────────────────────────────────────────────────
+    val = inc = bal = cf = tec = div = {}
     try:
         raw   = _td_call("statistics", {"symbol": symbol}, td_key)
         stats = raw.get("statistics", {})
-        val   = stats.get("valuations_metrics", {})
-        fin   = stats.get("financials", {})
-        inc   = fin.get("income_statement", {})
-        bal   = fin.get("balance_sheet", {})
-        cf    = fin.get("cash_flow", {})
-        tec   = stats.get("stock_statistics", {})
+        val   = stats.get("valuations_metrics",  {})
+        fin   = stats.get("financials",           {})
+        inc   = fin.get("income_statement",       {})
+        bal   = fin.get("balance_sheet",          {})
+        cf    = fin.get("cash_flow",              {})
+        tec   = stats.get("stock_statistics",     {})
         div   = stats.get("dividends_and_splits", {})
     except Exception:
-        val = fin = inc = bal = cf = tec = div = {}
-        stats = {}
+        pass
 
-    # ── /profile (sector + industry) ─────────────────────────────────────────
-    sector = industry = NA
+    # ── /profile → sector, industry, name, description ───────────────────────
+    sector = industry = name_full = NA
     try:
-        prof   = _td_call("profile", {"symbol": symbol}, td_key)
+        prof     = _td_call("profile", {"symbol": symbol}, td_key)
         sector   = prof.get("sector",   NA) or NA
         industry = prof.get("industry", NA) or NA
+        name_full = prof.get("name",   NA) or NA
+    except Exception:
+        pass
+
+    # ── /quote → market_cap proxy, 52w range, avg volume ─────────────────────
+    mkt_cap_proxy = NA
+    try:
+        q = _td_call("quote", {"symbol": symbol}, td_key)
+        # TD quote has fifty_two_week sub-object
+        fw = q.get("fifty_two_week", {})
+        # market cap not in quote; use from statistics if available
+        _mc = extract(val, "market_capitalization")
+        mkt_cap_proxy = _mc
     except Exception:
         pass
 
@@ -219,41 +249,47 @@ def td_fundamentals(symbol: str, td_key: str) -> dict:
         # ── Identification ───────────────────────────────────────────────────
         "sector":              sector,
         "industry":            industry,
+        "company_name":        name_full,
         # ── Valuation ────────────────────────────────────────────────────────
-        "market_cap":          g(val, "market_capitalization"),
-        "pe_ratio":            g(val, "trailing_pe"),
-        "forward_pe":          g(val, "forward_pe"),
-        "peg_ratio":           g(val, "peg_ratio"),
-        "price_to_book":       g(val, "price_to_book_mrq"),
-        "price_to_sales":      g(val, "price_to_sales_ttm"),
-        "ev_to_ebitda":        g(val, "enterprise_to_ebitda"),
+        "market_cap":          extract(val, "market_capitalization"),
+        "pe_ratio":            extract(val, "trailing_pe"),
+        "forward_pe":          extract(val, "forward_pe"),
+        "peg_ratio":           extract(val, "peg_ratio"),
+        "price_to_book":       extract(val, "price_to_book_mrq"),
+        "price_to_sales":      extract(val, "price_to_sales_ttm"),
+        "ev_to_ebitda":        extract(val, "enterprise_to_ebitda"),
+        "enterprise_value":    extract(val, "enterprise_value"),
         # ── Profitability ─────────────────────────────────────────────────────
-        "revenue":             g(inc, "revenue"),              # FIXED: was total_revenue
-        "revenue_growth_yoy":  g(inc, "quarterly_revenue_growth"),
-        "gross_profit":        g(inc, "gross_profit"),
-        "ebitda":              g(inc, "ebitda"),
-        "profit_margin":       g(inc, "profit_margin"),
-        "operating_margin":    g(inc, "operating_margin"),
-        "roe":                 g(inc, "return_on_equity"),
-        "roa":                 g(inc, "return_on_assets"),
-        "earnings_growth_yoy": g(inc, "quarterly_earnings_growth"),
+        "revenue":             extract(inc, "revenue"),
+        "revenue_growth_yoy":  extract(inc, "quarterly_revenue_growth"),
+        "gross_profit":        extract(inc, "gross_profit"),
+        "ebitda":              extract(inc, "ebitda"),
+        "profit_margin":       extract(inc, "profit_margin"),
+        "operating_margin":    extract(inc, "operating_margin"),
+        "roe":                 extract(inc, "return_on_equity"),
+        "roa":                 extract(inc, "return_on_assets"),
+        "earnings_growth_yoy": extract(inc, "quarterly_earnings_growth"),
+        "net_income":          extract(inc, "net_income_to_common"),
         # ── Per-share ─────────────────────────────────────────────────────────
-        "eps":                 g(val, "trailing_eps"),
-        "forward_eps":         g(val, "forward_eps"),
-        "book_value":          g(bal, "book_value_per_share"),
-        "dividend_yield":      g(div, "trailing_annual_dividend_yield"),
+        "eps":                 extract(val, "trailing_eps"),
+        "forward_eps":         extract(val, "forward_eps"),
+        "book_value":          extract(bal, "book_value_per_share"),
+        "dividend_yield":      extract(div, "trailing_annual_dividend_yield"),
         # ── Balance sheet ─────────────────────────────────────────────────────
-        "debt_to_equity":      g(bal, "total_debt_to_equity"),
-        "current_ratio":       g(bal, "current_ratio"),
-        "total_cash":          g(bal, "total_cash"),
+        "debt_to_equity":      extract(bal, "total_debt_to_equity"),
+        "current_ratio":       extract(bal, "current_ratio"),
+        "total_cash":          extract(bal, "total_cash"),
+        "total_debt":          extract(bal, "total_debt"),
         # ── Cash flow ─────────────────────────────────────────────────────────
-        "operating_cash_flow": g(cf,  "operating_cash_flow"),
-        "free_cash_flow":      g(cf,  "levered_free_cash_flow"),
+        "operating_cash_flow": extract(cf,  "operating_cash_flow"),
+        "free_cash_flow":      extract(cf,  "levered_free_cash_flow"),
         # ── Risk / structure ──────────────────────────────────────────────────
-        "beta":                g(tec, "beta"),
-        "short_ratio":         g(tec, "short_ratio"),
-        "inst_ownership":      g(tec, "percent_held_by_institutions"),
-        # ── Analyst (TD free tier may not have these) ─────────────────────────
+        "beta":                extract(tec, "beta"),
+        "short_ratio":         extract(tec, "short_ratio"),
+        "inst_ownership":      extract(tec, "percent_held_by_institutions"),
+        "insider_ownership":   extract(tec, "percent_held_by_insiders"),
+        "shares_outstanding":  extract(tec, "shares_outstanding"),
+        # ── Analyst ──────────────────────────────────────────────────────────
         "analyst_target":      NA,
         "analyst_consensus":   NA,
         "recommendation":      NA,
@@ -402,15 +438,28 @@ def fetch_all(symbol: str, av_key: str, td_key: str):
         except Exception as e:
             errors.append(f"AV OVERVIEW ❌ {e}")
 
+    # ── Fallback: try TD fundamentals if AV failed ───────────────────────────
+    if fund is None and td_key:
+        try:
+            fund     = td_fundamentals(symbol, td_key)
+            fund_src = "Twelve Data"
+            # Debug: record TD populated fields
+            debug_info["fund_populated"] = {
+                k: v for k, v in fund.items() if v != "N/A"
+            }
+        except Exception as e:
+            errors.append(f"TD fundamentals ❌ {e}")
+
     if fund is None:
         fund = {k: "N/A" for k in [
-            "sector","industry","market_cap","pe_ratio","forward_pe","peg_ratio",
-            "price_to_book","price_to_sales","ev_to_ebitda","revenue","revenue_growth_yoy",
-            "gross_profit","ebitda","profit_margin","operating_margin","roe","roa",
-            "earnings_growth_yoy","eps","eps_diluted","book_value","dividend_yield","beta",
+            "sector","industry","company_name","market_cap","pe_ratio","forward_pe","peg_ratio",
+            "price_to_book","price_to_sales","ev_to_ebitda","enterprise_value",
+            "revenue","revenue_growth_yoy","gross_profit","ebitda","profit_margin",
+            "operating_margin","roe","roa","earnings_growth_yoy","net_income",
+            "eps","forward_eps","book_value","dividend_yield","beta",
             "analyst_target","analyst_consensus","debt_to_equity","current_ratio",
-            "total_cash","operating_cash_flow","free_cash_flow","short_ratio",
-            "inst_ownership","recommendation",
+            "total_cash","total_debt","operating_cash_flow","free_cash_flow",
+            "short_ratio","inst_ownership","insider_ownership","shares_outstanding","recommendation",
         ]}
         fund_src = "unavailable"
 
@@ -632,6 +681,29 @@ if not av_key and not td_key:
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 symbol = ticker_input.upper().strip()
 
+# ── Pre-flight: test AV OVERVIEW directly and show raw result ────────────────
+if av_key:
+    with st.expander("🔬 AV 基本面原始數據預覽（點擊展開）", expanded=False):
+        try:
+            _test_ov = _av_call("OVERVIEW", {"symbol": symbol}, av_key)
+            _has_data = len([v for v in _test_ov.values() if v and v not in ("None","-","")]) > 5
+            if _has_data:
+                st.success(f"✅ AV OVERVIEW 成功：獲得 {len(_test_ov)} 個字段")
+                # Show key fields
+                _key_fields = ["Symbol","Sector","Industry","MarketCapitalization",
+                               "TrailingPE","ForwardPE","EPS","ProfitMargin",
+                               "RevenueTTM","Beta","AnalystTargetPrice"]
+                for _f in _key_fields:
+                    _v = _test_ov.get(_f, "—")
+                    if _v and _v != "None":
+                        st.markdown(f"<span style='font-size:12px;color:#00ff88;'>`{_f}`: **{_v}**</span>", unsafe_allow_html=True)
+            else:
+                st.error(f"⚠️ AV OVERVIEW 返回空數據！完整回應：")
+                st.json(_test_ov)
+        except Exception as _e:
+            st.error(f"❌ AV OVERVIEW 調用失敗：{_e}")
+            st.info("可能原因：① AV Key 無效 ② 超出每分鐘 5 次限額（等 1 分鐘）③ 股票代號不在 AV 數據庫")
+
 with st.spinner(f"正在獲取 {symbol} 市場數據…"):
     try:
         df, fundamentals, news_headlines, source, debug_info = fetch_all(symbol, av_key, td_key)
@@ -677,6 +749,23 @@ with st.sidebar:
             with st.expander("AV OVERVIEW 原始數據"):
                 for k, v in list(av_raw.items())[:30]:
                     st.markdown(f"<span style='font-size:10px;color:#b8972a;'>`{k}`: {v}</span>", unsafe_allow_html=True)
+
+        # Show TD raw stats structure for debugging
+        fund_src_dbg = debug_info.get("sources", {}).get("fundamentals", "")
+        if fund_src_dbg == "Twelve Data" and td_key:
+            with st.expander("TD Statistics 原始數據"):
+                try:
+                    _td_raw = _td_call("statistics", {"symbol": symbol}, td_key)
+                    _stats  = _td_raw.get("statistics", {})
+                    _val    = _stats.get("valuations_metrics", {})
+                    st.markdown("**valuations_metrics 樣本：**")
+                    for k, v in list(_val.items())[:8]:
+                        _vv = v.get("value", v) if isinstance(v, dict) else v
+                        st.markdown(f"<span style='font-size:10px;color:#a78bfa;'>`{k}`: {_vv}</span>", unsafe_allow_html=True)
+                    _prof = _td_call("profile", {"symbol": symbol}, td_key)
+                    st.markdown(f"**Profile:** sector={_prof.get('sector','?')}, industry={_prof.get('industry','?')}")
+                except Exception as _e:
+                    st.markdown(f"<span style='color:#ff4444;font-size:11px;'>TD raw fetch error: {_e}</span>", unsafe_allow_html=True)
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 change = technicals["change_pct"]
