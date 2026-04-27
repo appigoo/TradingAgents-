@@ -149,29 +149,64 @@ def _av_fetch_all(symbol: str, av_key: str):
     nws = av_news(symbol, av_key)
 
     def s(k, *alt):
+        """Safe float/string extractor — returns 'N/A' if missing or 'None'."""
         for key in [k, *alt]:
             v = ov.get(key)
-            if v and v != "None":
+            if v and v not in ("None", "-", ""):
                 try: return float(v)
                 except: return v
         return "N/A"
 
+    # Analyst rating breakdown → synthesise a readable consensus string
+    def _analyst_consensus():
+        sb = s("AnalystRatingStrongBuy");  b = s("AnalystRatingBuy")
+        h  = s("AnalystRatingHold");       sl = s("AnalystRatingSell")
+        ss = s("AnalystRatingStrongSell")
+        parts = []
+        if sb != "N/A" and float(sb) > 0: parts.append(f"StrongBuy×{int(float(sb))}")
+        if b  != "N/A" and float(b)  > 0: parts.append(f"Buy×{int(float(b))}")
+        if h  != "N/A" and float(h)  > 0: parts.append(f"Hold×{int(float(h))}")
+        if sl != "N/A" and float(sl) > 0: parts.append(f"Sell×{int(float(sl))}")
+        if ss != "N/A" and float(ss) > 0: parts.append(f"StrongSell×{int(float(ss))}")
+        return " | ".join(parts) if parts else "N/A"
+
     fund = {
-        "market_cap":    s("MarketCapitalization"),
-        "pe_ratio":      s("TrailingPE"),
-        "forward_pe":    s("ForwardPE"),
-        "revenue":       s("RevenueTTM"),
-        "profit_margin": s("ProfitMargin"),
-        "debt_to_equity":s("DebtToEquityRatio", "DebtEquityRatio"),
-        "roe":           s("ReturnOnEquityTTM"),
-        "eps":           s("EPS"),
-        "beta":          s("Beta"),
-        "short_ratio":   s("ShortRatio"),
-        "analyst_target":s("AnalystTargetPrice"),
-        "recommendation":ov.get("RecommendationKey", "N/A"),
-        "sector":        ov.get("Sector", "N/A"),
-        "industry":      ov.get("Industry", "N/A"),
-        "dividend_yield":s("DividendYield"),
+        # ── Identification ──────────────────────────────────────────────────
+        "sector":                  ov.get("Sector",   "N/A"),
+        "industry":                ov.get("Industry", "N/A"),
+        # ── Valuation ───────────────────────────────────────────────────────
+        "market_cap":              s("MarketCapitalization"),
+        "pe_ratio":                s("TrailingPE"),
+        "forward_pe":              s("ForwardPE"),
+        "peg_ratio":               s("PEGRatio"),
+        "price_to_book":           s("PriceToBookRatio"),
+        "price_to_sales":          s("PriceToSalesRatioTTM"),
+        "ev_to_ebitda":            s("EVToEBITDA"),           # present in OVERVIEW
+        # ── Profitability ────────────────────────────────────────────────────
+        "revenue":                 s("RevenueTTM"),
+        "revenue_growth_yoy":      s("QuarterlyRevenueGrowthYOY"),
+        "gross_profit":            s("GrossProfitTTM"),
+        "ebitda":                  s("EBITDA"),
+        "profit_margin":           s("ProfitMargin"),
+        "operating_margin":        s("OperatingMarginTTM"),
+        "roe":                     s("ReturnOnEquityTTM"),
+        "roa":                     s("ReturnOnAssetsTTM"),
+        "earnings_growth_yoy":     s("QuarterlyEarningsGrowthYOY"),
+        # ── Per-share ────────────────────────────────────────────────────────
+        "eps":                     s("EPS"),
+        "eps_diluted":             s("DilutedEPSTTM"),
+        "book_value":              s("BookValue"),
+        "dividend_yield":          s("DividendYield"),
+        # ── Risk / structure ─────────────────────────────────────────────────
+        "beta":                    s("Beta"),
+        # Note: ShortRatio is NOT in AV OVERVIEW; omit to avoid N/A
+        # ── Analyst ──────────────────────────────────────────────────────────
+        "analyst_target":          s("AnalystTargetPrice"),
+        "analyst_consensus":       _analyst_consensus(),
+        # ── Legacy keys kept for backward-compat with fmt() calls ────────────
+        "debt_to_equity":          "N/A",   # not in AV OVERVIEW
+        "short_ratio":             "N/A",   # not in AV OVERVIEW
+        "recommendation":          _analyst_consensus(),
     }
     return df, fund, nws
 
@@ -207,35 +242,90 @@ def td_ohlcv(symbol: str, td_key: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def td_fundamentals(symbol: str, td_key: str) -> dict:
+    """
+    Fetch statistics + profile from Twelve Data.
+    statistics → valuation / financials / stock_statistics
+    profile    → sector, industry, description
+    """
+    NA = "N/A"
+
+    def g(d, *keys):
+        """Safe nested get with float coercion."""
+        val = d
+        for k in keys:
+            if not isinstance(val, dict): return NA
+            val = val.get(k, NA)
+        if val in (NA, None, "", "None"): return NA
+        try: return float(val)
+        except: return val
+
+    # ── /statistics ──────────────────────────────────────────────────────────
     try:
-        data  = _td_call("statistics", {"symbol": symbol}, td_key)
-        stats = data.get("statistics", {})
+        raw   = _td_call("statistics", {"symbol": symbol}, td_key)
+        stats = raw.get("statistics", {})
         val   = stats.get("valuations_metrics", {})
         fin   = stats.get("financials", {})
         inc   = fin.get("income_statement", {})
         bal   = fin.get("balance_sheet", {})
+        cf    = fin.get("cash_flow", {})
         tec   = stats.get("stock_statistics", {})
-        return {
-            "market_cap":    val.get("market_capitalization", "N/A"),
-            "pe_ratio":      val.get("trailing_pe",           "N/A"),
-            "forward_pe":    val.get("forward_pe",            "N/A"),
-            "revenue":       inc.get("total_revenue",         "N/A"),
-            "profit_margin": inc.get("profit_margin",         "N/A"),
-            "debt_to_equity":bal.get("total_debt_to_equity",  "N/A"),
-            "roe":           inc.get("return_on_equity",      "N/A"),
-            "eps":           val.get("trailing_eps",           "N/A"),
-            "beta":          tec.get("beta",                   "N/A"),
-            "short_ratio":   tec.get("short_ratio",            "N/A"),
-            "analyst_target":"N/A",
-            "recommendation":"N/A",
-            "sector":        data.get("sector",                "N/A"),
-            "industry":      data.get("industry",              "N/A"),
-            "dividend_yield":"N/A",
-        }
+        div   = stats.get("dividends_and_splits", {})
     except Exception:
-        return {k: "N/A" for k in ["market_cap","pe_ratio","forward_pe","revenue",
-            "profit_margin","debt_to_equity","roe","eps","beta","short_ratio",
-            "analyst_target","recommendation","sector","industry","dividend_yield"]}
+        val = fin = inc = bal = cf = tec = div = {}
+        stats = {}
+
+    # ── /profile (sector + industry) ─────────────────────────────────────────
+    sector = industry = NA
+    try:
+        prof   = _td_call("profile", {"symbol": symbol}, td_key)
+        sector   = prof.get("sector",   NA) or NA
+        industry = prof.get("industry", NA) or NA
+    except Exception:
+        pass
+
+    return {
+        # ── Identification ───────────────────────────────────────────────────
+        "sector":              sector,
+        "industry":            industry,
+        # ── Valuation ────────────────────────────────────────────────────────
+        "market_cap":          g(val, "market_capitalization"),
+        "pe_ratio":            g(val, "trailing_pe"),
+        "forward_pe":          g(val, "forward_pe"),
+        "peg_ratio":           g(val, "peg_ratio"),
+        "price_to_book":       g(val, "price_to_book_mrq"),
+        "price_to_sales":      g(val, "price_to_sales_ttm"),
+        "ev_to_ebitda":        g(val, "enterprise_to_ebitda"),
+        # ── Profitability ─────────────────────────────────────────────────────
+        "revenue":             g(inc, "revenue"),              # FIXED: was total_revenue
+        "revenue_growth_yoy":  g(inc, "quarterly_revenue_growth"),
+        "gross_profit":        g(inc, "gross_profit"),
+        "ebitda":              g(inc, "ebitda"),
+        "profit_margin":       g(inc, "profit_margin"),
+        "operating_margin":    g(inc, "operating_margin"),
+        "roe":                 g(inc, "return_on_equity"),
+        "roa":                 g(inc, "return_on_assets"),
+        "earnings_growth_yoy": g(inc, "quarterly_earnings_growth"),
+        # ── Per-share ─────────────────────────────────────────────────────────
+        "eps":                 g(val, "trailing_eps"),
+        "forward_eps":         g(val, "forward_eps"),
+        "book_value":          g(bal, "book_value_per_share"),
+        "dividend_yield":      g(div, "trailing_annual_dividend_yield"),
+        # ── Balance sheet ─────────────────────────────────────────────────────
+        "debt_to_equity":      g(bal, "total_debt_to_equity"),
+        "current_ratio":       g(bal, "current_ratio"),
+        "total_cash":          g(bal, "total_cash"),
+        # ── Cash flow ─────────────────────────────────────────────────────────
+        "operating_cash_flow": g(cf,  "operating_cash_flow"),
+        "free_cash_flow":      g(cf,  "levered_free_cash_flow"),
+        # ── Risk / structure ──────────────────────────────────────────────────
+        "beta":                g(tec, "beta"),
+        "short_ratio":         g(tec, "short_ratio"),
+        "inst_ownership":      g(tec, "percent_held_by_institutions"),
+        # ── Analyst (TD free tier may not have these) ─────────────────────────
+        "analyst_target":      NA,
+        "analyst_consensus":   NA,
+        "recommendation":      NA,
+    }
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -349,10 +439,18 @@ Analyse the provided news headlines for sentiment, tone, and potential market im
 Identify the dominant narrative and any catalysts.
 Keep response under 180 words. End with a one-line SIGNAL: BULLISH / BEARISH / NEUTRAL."""
 
-FUNDAMENTAL_SYSTEM = """You are a fundamental analyst at a top hedge fund.
-Analyse the provided financial metrics. Focus on valuation, profitability, and risk.
-Compare PE, margins, and growth signals. Be direct and quantitative.
-Keep response under 180 words. End with a one-line SIGNAL: UNDERVALUED / OVERVALUED / FAIRLY VALUED."""
+FUNDAMENTAL_SYSTEM = """You are a fundamental analyst at a top-tier hedge fund with CFA credentials.
+You receive structured financial data that may include valuation, profitability, balance sheet, cash flow, and analyst metrics.
+Some fields may show N/A if not available from the data source — work with what is provided and note gaps briefly.
+Your job:
+1. Assess valuation (PE vs sector norms, PEG, P/B)
+2. Evaluate profitability quality (margins, ROE, earnings growth)
+3. Examine balance sheet health (debt, cash, FCF)
+4. Factor in analyst positioning if available
+5. Give a clear investment stance
+
+Be direct, quantitative, and concise. Keep response under 200 words.
+End with a one-line SIGNAL: UNDERVALUED / OVERVALUED / FAIRLY VALUED"""
 
 RISK_SYSTEM = """You are the Chief Risk Officer and final decision maker.
 You receive reports from three analysts: Technical, Sentiment, and Fundamental.
@@ -551,23 +649,73 @@ render_agent("sentiment", "📰", "情緒分析師", "sent")
 
 # Agent 3 — Fundamental
 progress.progress(60, text="💰 基本面分析師分析中...")
-def fmt(v):
+
+def fmt(v, pct=False, big=False):
+    """Format a value for the AI prompt."""
     if v == "N/A" or v is None: return "N/A"
-    if isinstance(v, float):
-        return f"${v/1e9:.1f}B" if v > 1e9 else (f"{v:.4f}" if v < 1 else f"{v:.2f}")
-    if isinstance(v, int) and v > 1_000_000: return f"${v/1e9:.1f}B"
-    return str(v)
+    try:
+        f = float(v)
+        if pct:  return f"{f*100:.2f}%" if abs(f) < 10 else f"{f:.2f}%"
+        if big:  return f"${f/1e9:.2f}B" if abs(f) >= 1e9 else (f"${f/1e6:.1f}M" if abs(f) >= 1e6 else f"{f:.2f}")
+        return f"{f:.2f}"
+    except:
+        return str(v)
+
+# Build only lines that have real data (skip N/A lines to keep prompt clean)
+def line(label, val, **kwargs):
+    v = fmt(val, **kwargs)
+    return f"{label}: {v}" if v != "N/A" else None
+
+fund_lines = [
+    f"Stock: {symbol} | Sector: {fundamentals.get('sector','N/A')} | Industry: {fundamentals.get('industry','N/A')}",
+    "",
+    "── VALUATION ──",
+    line("Market Cap",        fundamentals.get("market_cap"),    big=True),
+    line("Trailing PE",       fundamentals.get("pe_ratio")),
+    line("Forward PE",        fundamentals.get("forward_pe")),
+    line("PEG Ratio",         fundamentals.get("peg_ratio")),
+    line("Price/Book",        fundamentals.get("price_to_book")),
+    line("Price/Sales",       fundamentals.get("price_to_sales")),
+    line("EV/EBITDA",         fundamentals.get("ev_to_ebitda")),
+    "",
+    "── PROFITABILITY ──",
+    line("Revenue (TTM)",     fundamentals.get("revenue"),       big=True),
+    line("Revenue Growth YoY",fundamentals.get("revenue_growth_yoy"), pct=True),
+    line("Gross Profit",      fundamentals.get("gross_profit"),  big=True),
+    line("EBITDA",            fundamentals.get("ebitda"),        big=True),
+    line("Profit Margin",     fundamentals.get("profit_margin"), pct=True),
+    line("Operating Margin",  fundamentals.get("operating_margin"), pct=True),
+    line("ROE",               fundamentals.get("roe"),           pct=True),
+    line("ROA",               fundamentals.get("roa"),           pct=True),
+    line("Earnings Growth YoY",fundamentals.get("earnings_growth_yoy"), pct=True),
+    "",
+    "── PER SHARE ──",
+    line("EPS (Trailing)",    fundamentals.get("eps")),
+    line("EPS (Forward)",     fundamentals.get("forward_eps")),
+    line("Book Value/Share",  fundamentals.get("book_value")),
+    line("Dividend Yield",    fundamentals.get("dividend_yield"), pct=True),
+    "",
+    "── BALANCE SHEET / CASH FLOW ──",
+    line("Debt/Equity",       fundamentals.get("debt_to_equity")),
+    line("Current Ratio",     fundamentals.get("current_ratio")),
+    line("Total Cash",        fundamentals.get("total_cash"),    big=True),
+    line("Operating Cash Flow",fundamentals.get("operating_cash_flow"), big=True),
+    line("Free Cash Flow",    fundamentals.get("free_cash_flow"), big=True),
+    "",
+    "── RISK & OWNERSHIP ──",
+    line("Beta",              fundamentals.get("beta")),
+    line("Short Ratio",       fundamentals.get("short_ratio")),
+    line("Institutional Ownership", fundamentals.get("inst_ownership"), pct=True),
+    "",
+    "── ANALYST ──",
+    line("Target Price",      fundamentals.get("analyst_target")),
+    line("Analyst Ratings",   fundamentals.get("analyst_consensus")),
+]
+
+fund_prompt = "\n".join(l for l in fund_lines if l is not None)
+
 try:
-    R["fund"] = call_agent(client, FUNDAMENTAL_SYSTEM, f"""
-Stock: {symbol} | Sector: {fundamentals['sector']} | Industry: {fundamentals['industry']}
-Market Cap: {fmt(fundamentals['market_cap'])}
-Trailing PE: {fmt(fundamentals['pe_ratio'])} | Forward PE: {fmt(fundamentals['forward_pe'])}
-Revenue: {fmt(fundamentals['revenue'])} | Profit Margin: {fmt(fundamentals['profit_margin'])}
-Debt/Equity: {fmt(fundamentals['debt_to_equity'])} | ROE: {fmt(fundamentals['roe'])}
-EPS: {fmt(fundamentals['eps'])} | Beta: {fmt(fundamentals['beta'])}
-Short Ratio: {fmt(fundamentals['short_ratio'])} | Analyst Target: {fmt(fundamentals['analyst_target'])}
-Consensus: {fundamentals['recommendation']}
-""")
+    R["fund"] = call_agent(client, FUNDAMENTAL_SYSTEM, fund_prompt)
 except Exception as e:
     R["fund"] = f"Error: {e}"
 render_agent("fundamental", "💰", "基本面分析師", "fund")
