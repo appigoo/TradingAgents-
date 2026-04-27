@@ -143,74 +143,6 @@ def av_news(symbol: str, av_key: str) -> list:
         return []
 
 
-def _av_fetch_all(symbol: str, av_key: str):
-    df  = av_ohlcv(symbol, av_key)
-    ov  = av_overview(symbol, av_key)
-    nws = av_news(symbol, av_key)
-
-    def s(k, *alt):
-        """Safe float/string extractor — returns 'N/A' if missing or 'None'."""
-        for key in [k, *alt]:
-            v = ov.get(key)
-            if v and v not in ("None", "-", ""):
-                try: return float(v)
-                except: return v
-        return "N/A"
-
-    # Analyst rating breakdown → synthesise a readable consensus string
-    def _analyst_consensus():
-        sb = s("AnalystRatingStrongBuy");  b = s("AnalystRatingBuy")
-        h  = s("AnalystRatingHold");       sl = s("AnalystRatingSell")
-        ss = s("AnalystRatingStrongSell")
-        parts = []
-        if sb != "N/A" and float(sb) > 0: parts.append(f"StrongBuy×{int(float(sb))}")
-        if b  != "N/A" and float(b)  > 0: parts.append(f"Buy×{int(float(b))}")
-        if h  != "N/A" and float(h)  > 0: parts.append(f"Hold×{int(float(h))}")
-        if sl != "N/A" and float(sl) > 0: parts.append(f"Sell×{int(float(sl))}")
-        if ss != "N/A" and float(ss) > 0: parts.append(f"StrongSell×{int(float(ss))}")
-        return " | ".join(parts) if parts else "N/A"
-
-    fund = {
-        # ── Identification ──────────────────────────────────────────────────
-        "sector":                  ov.get("Sector",   "N/A"),
-        "industry":                ov.get("Industry", "N/A"),
-        # ── Valuation ───────────────────────────────────────────────────────
-        "market_cap":              s("MarketCapitalization"),
-        "pe_ratio":                s("TrailingPE"),
-        "forward_pe":              s("ForwardPE"),
-        "peg_ratio":               s("PEGRatio"),
-        "price_to_book":           s("PriceToBookRatio"),
-        "price_to_sales":          s("PriceToSalesRatioTTM"),
-        "ev_to_ebitda":            s("EVToEBITDA"),           # present in OVERVIEW
-        # ── Profitability ────────────────────────────────────────────────────
-        "revenue":                 s("RevenueTTM"),
-        "revenue_growth_yoy":      s("QuarterlyRevenueGrowthYOY"),
-        "gross_profit":            s("GrossProfitTTM"),
-        "ebitda":                  s("EBITDA"),
-        "profit_margin":           s("ProfitMargin"),
-        "operating_margin":        s("OperatingMarginTTM"),
-        "roe":                     s("ReturnOnEquityTTM"),
-        "roa":                     s("ReturnOnAssetsTTM"),
-        "earnings_growth_yoy":     s("QuarterlyEarningsGrowthYOY"),
-        # ── Per-share ────────────────────────────────────────────────────────
-        "eps":                     s("EPS"),
-        "eps_diluted":             s("DilutedEPSTTM"),
-        "book_value":              s("BookValue"),
-        "dividend_yield":          s("DividendYield"),
-        # ── Risk / structure ─────────────────────────────────────────────────
-        "beta":                    s("Beta"),
-        # Note: ShortRatio is NOT in AV OVERVIEW; omit to avoid N/A
-        # ── Analyst ──────────────────────────────────────────────────────────
-        "analyst_target":          s("AnalystTargetPrice"),
-        "analyst_consensus":       _analyst_consensus(),
-        # ── Legacy keys kept for backward-compat with fmt() calls ────────────
-        "debt_to_equity":          "N/A",   # not in AV OVERVIEW
-        "short_ratio":             "N/A",   # not in AV OVERVIEW
-        "recommendation":          _analyst_consensus(),
-    }
-    return df, fund, nws
-
-
 # ── Twelve Data helpers ───────────────────────────────────────────────────────
 
 def _td_call(endpoint: str, params: dict, td_key: str) -> dict:
@@ -339,33 +271,174 @@ def td_news(symbol: str, td_key: str) -> list:
 
 
 def _td_fetch_all(symbol: str, td_key: str):
-    df   = td_ohlcv(symbol, td_key)
-    fund = td_fundamentals(symbol, td_key)
-    nws  = td_news(symbol, td_key)
-    return df, fund, nws
+    """TD: only OHLCV + news (statistics/profile are paid endpoints)."""
+    df  = td_ohlcv(symbol, td_key)
+    nws = td_news(symbol, td_key)
+    # Return empty fundamentals — will be filled by AV if available
+    empty_fund = {k: "N/A" for k in [
+        "sector","industry","market_cap","pe_ratio","forward_pe","peg_ratio",
+        "price_to_book","price_to_sales","ev_to_ebitda","revenue","revenue_growth_yoy",
+        "gross_profit","ebitda","profit_margin","operating_margin","roe","roa",
+        "earnings_growth_yoy","eps","forward_eps","book_value","dividend_yield",
+        "debt_to_equity","current_ratio","total_cash","operating_cash_flow",
+        "free_cash_flow","beta","short_ratio","inst_ownership",
+        "analyst_target","analyst_consensus","recommendation",
+    ]}
+    return df, empty_fund, nws
 
 
-# ── Unified fetcher with auto-fallback ────────────────────────────────────────
-
+# ── Unified fetcher — split responsibilities ──────────────────────────────────
+#
+#  OHLCV  : AV first → TD fallback
+#  FUND   : AV always (OVERVIEW is free & complete) → empty if AV unavailable
+#  NEWS   : AV NEWS_SENTIMENT first → TD news fallback
+#
 def fetch_all(symbol: str, av_key: str, td_key: str):
-    """Try Alpha Vantage → Twelve Data.  Returns (df, fund, news, source)."""
-    errors = []
+    """Returns (df, fund, news, ohlcv_source, fund_source, debug_info)."""
+    debug_info = {}
+    errors     = []
+
+    # ── 1. OHLCV ─────────────────────────────────────────────────────────────
+    df          = None
+    ohlcv_src   = "none"
 
     if av_key:
         try:
-            df, fund, nws = _av_fetch_all(symbol, av_key)
-            return df, fund, nws, "Alpha Vantage"
+            df        = av_ohlcv(symbol, av_key)
+            ohlcv_src = "Alpha Vantage"
         except Exception as e:
-            errors.append(f"Alpha Vantage ❌ {e}")
+            errors.append(f"AV OHLCV ❌ {e}")
 
-    if td_key:
+    if df is None and td_key:
         try:
-            df, fund, nws = _td_fetch_all(symbol, td_key)
-            return df, fund, nws, "Twelve Data"
+            df        = td_ohlcv(symbol, td_key)
+            ohlcv_src = "Twelve Data"
         except Exception as e:
-            errors.append(f"Twelve Data ❌ {e}")
+            errors.append(f"TD OHLCV ❌ {e}")
 
-    raise RuntimeError("兩個數據源均失敗：\n" + "\n".join(errors))
+    if df is None:
+        raise RuntimeError("OHLCV 數據獲取失敗：\n" + "\n".join(errors))
+
+    # ── 2. FUNDAMENTALS (AV OVERVIEW only — it's free and complete) ───────────
+    fund      = None
+    fund_src  = "none"
+
+    if av_key:
+        try:
+            ov = av_overview(symbol, av_key)
+
+            # Debug: record raw AV overview keys that have real values
+            debug_info["av_overview_populated"] = {
+                k: v for k, v in ov.items()
+                if v and v not in ("None", "-", "", "0")
+            }
+
+            def s(k, *alt):
+                for key in [k, *alt]:
+                    v = ov.get(key)
+                    if v and v not in ("None", "-", ""):
+                        try:    return float(v)
+                        except: return v
+                return "N/A"
+
+            def _analyst_consensus():
+                parts = []
+                for label, key in [("StrongBuy","AnalystRatingStrongBuy"),
+                                    ("Buy",      "AnalystRatingBuy"),
+                                    ("Hold",     "AnalystRatingHold"),
+                                    ("Sell",     "AnalystRatingSell"),
+                                    ("StrongSell","AnalystRatingStrongSell")]:
+                    v = s(key)
+                    if v != "N/A":
+                        try:
+                            if float(v) > 0:
+                                parts.append(f"{label}×{int(float(v))}")
+                        except: pass
+                return " | ".join(parts) if parts else "N/A"
+
+            fund = {
+                "sector":              ov.get("Sector",   "N/A"),
+                "industry":            ov.get("Industry", "N/A"),
+                "market_cap":          s("MarketCapitalization"),
+                "pe_ratio":            s("TrailingPE"),
+                "forward_pe":          s("ForwardPE"),
+                "peg_ratio":           s("PEGRatio"),
+                "price_to_book":       s("PriceToBookRatio"),
+                "price_to_sales":      s("PriceToSalesRatioTTM"),
+                "ev_to_ebitda":        s("EVToEBITDA"),
+                "revenue":             s("RevenueTTM"),
+                "revenue_growth_yoy":  s("QuarterlyRevenueGrowthYOY"),
+                "gross_profit":        s("GrossProfitTTM"),
+                "ebitda":              s("EBITDA"),
+                "profit_margin":       s("ProfitMargin"),
+                "operating_margin":    s("OperatingMarginTTM"),
+                "roe":                 s("ReturnOnEquityTTM"),
+                "roa":                 s("ReturnOnAssetsTTM"),
+                "earnings_growth_yoy": s("QuarterlyEarningsGrowthYOY"),
+                "eps":                 s("EPS"),
+                "eps_diluted":         s("DilutedEPSTTM"),
+                "book_value":          s("BookValue"),
+                "dividend_yield":      s("DividendYield"),
+                "beta":                s("Beta"),
+                "analyst_target":      s("AnalystTargetPrice"),
+                "analyst_consensus":   _analyst_consensus(),
+                # Not in AV OVERVIEW:
+                "debt_to_equity":      "N/A",
+                "current_ratio":       "N/A",
+                "total_cash":          "N/A",
+                "operating_cash_flow": "N/A",
+                "free_cash_flow":      "N/A",
+                "short_ratio":         "N/A",
+                "inst_ownership":      "N/A",
+                "recommendation":      _analyst_consensus(),
+            }
+            fund_src = "Alpha Vantage"
+
+            # Debug: which fund fields are populated
+            debug_info["fund_populated"] = {
+                k: v for k, v in fund.items() if v != "N/A"
+            }
+
+        except Exception as e:
+            errors.append(f"AV OVERVIEW ❌ {e}")
+
+    if fund is None:
+        fund = {k: "N/A" for k in [
+            "sector","industry","market_cap","pe_ratio","forward_pe","peg_ratio",
+            "price_to_book","price_to_sales","ev_to_ebitda","revenue","revenue_growth_yoy",
+            "gross_profit","ebitda","profit_margin","operating_margin","roe","roa",
+            "earnings_growth_yoy","eps","eps_diluted","book_value","dividend_yield","beta",
+            "analyst_target","analyst_consensus","debt_to_equity","current_ratio",
+            "total_cash","operating_cash_flow","free_cash_flow","short_ratio",
+            "inst_ownership","recommendation",
+        ]}
+        fund_src = "unavailable"
+
+    # ── 3. NEWS ───────────────────────────────────────────────────────────────
+    news     = []
+    news_src = "none"
+
+    if av_key:
+        try:
+            news     = av_news(symbol, av_key)
+            news_src = "Alpha Vantage"
+        except Exception:
+            pass
+
+    if not news and td_key:
+        try:
+            news     = td_news(symbol, td_key)
+            news_src = "Twelve Data"
+        except Exception:
+            pass
+
+    debug_info["sources"] = {
+        "ohlcv": ohlcv_src, "fundamentals": fund_src, "news": news_src
+    }
+    debug_info["errors"] = errors
+
+    combined_src = ohlcv_src if ohlcv_src == fund_src else f"{ohlcv_src} + {fund_src}"
+    return df, fund, news, combined_src, debug_info
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -561,7 +634,7 @@ symbol = ticker_input.upper().strip()
 
 with st.spinner(f"正在獲取 {symbol} 市場數據…"):
     try:
-        df, fundamentals, news_headlines, source = fetch_all(symbol, av_key, td_key)
+        df, fundamentals, news_headlines, source, debug_info = fetch_all(symbol, av_key, td_key)
     except Exception as e:
         st.error(f"❌ 數據獲取失敗：{e}")
         st.info("請確認：① 股票代號正確（美股：TSLA，港股：9988.HK）② API Key 有效 ③ 未超出免費配額")
@@ -569,11 +642,41 @@ with st.spinner(f"正在獲取 {symbol} 市場數據…"):
 
 technicals = compute_technicals(df)
 
-# Source badge
-src_cls  = "source-av" if source == "Alpha Vantage" else "source-td"
-src_icon = "🔵" if source == "Alpha Vantage" else "🟣"
-st.markdown(f"<div class='source-badge {src_cls}'>{src_icon} 數據來源：{source}</div>",
-            unsafe_allow_html=True)
+# Source badges
+src_map = debug_info.get("sources", {})
+col1, col2, col3 = st.columns([1,1,4])
+with col1:
+    ohlcv_s = src_map.get("ohlcv","?")
+    cls = "source-av" if "Alpha" in ohlcv_s else "source-td"
+    st.markdown(f"<div class='source-badge {cls}'>{'🔵' if 'Alpha' in ohlcv_s else '🟣'} K線：{ohlcv_s}</div>", unsafe_allow_html=True)
+with col2:
+    fund_s = src_map.get("fundamentals","?")
+    cls = "source-av" if "Alpha" in fund_s else ("source-td" if "Twelve" in fund_s else "")
+    icon = "🔵" if "Alpha" in fund_s else ("🟣" if "Twelve" in fund_s else "⚪")
+    st.markdown(f"<div class='source-badge {cls}'>{icon} 基本面：{fund_s}</div>", unsafe_allow_html=True)
+
+# Debug expander — shows exactly what data was fetched
+with st.sidebar:
+    with st.expander("🔍 數據 Debug", expanded=False):
+        errs = debug_info.get("errors", [])
+        if errs:
+            st.markdown("**錯誤：**")
+            for e in errs:
+                st.markdown(f"<span style='color:#ff4444;font-size:11px;'>{e}</span>", unsafe_allow_html=True)
+
+        populated = debug_info.get("fund_populated", {})
+        st.markdown(f"**基本面字段（已取得 {len(populated)} 個）：**")
+        if populated:
+            for k, v in populated.items():
+                st.markdown(f"<span style='font-size:11px;color:#00ff88;'>`{k}`: {v}</span>", unsafe_allow_html=True)
+        else:
+            st.markdown("<span style='color:#ff4444;font-size:11px;'>⚠️ 無基本面數據 — AV Key 可能無效或超出配額</span>", unsafe_allow_html=True)
+
+        av_raw = debug_info.get("av_overview_populated", {})
+        if av_raw:
+            with st.expander("AV OVERVIEW 原始數據"):
+                for k, v in list(av_raw.items())[:30]:
+                    st.markdown(f"<span style='font-size:10px;color:#b8972a;'>`{k}`: {v}</span>", unsafe_allow_html=True)
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 change = technicals["change_pct"]
